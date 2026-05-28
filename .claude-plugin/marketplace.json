@@ -1,0 +1,15 @@
+{
+  "name": "ccx-harness",
+  "description": "Orchestrate OpenAI Codex.app from Claude Code. Plan features interactively, dispatch via computer-use, receive completion notifications back in the same Claude session, and gate merges behind an independent two-reviewer verification.",
+  "owner": {
+    "name": "Ryan Lavin",
+    "email": "ryantlavin@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "ccx-harness",
+      "source": "./",
+      "description": "Plan features interactively in Claude, then orchestrate OpenAI Codex.app to implement them with tests baked in."
+    }
+  ]
+}
