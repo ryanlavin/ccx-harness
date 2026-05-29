@@ -117,7 +117,7 @@ For this feature, you MUST use a PR-based workflow, not direct push to main. The
 
 4. Capture the PR URL from gh's output. You need it in the completion frontmatter.
 
-5. Do NOT merge the PR yourself. The harness runs an independent two-reviewer verification on the PR after you signal completion. On convergence it merges with `gh pr merge --squash --delete-branch`, so your branch is deleted the moment it merges. You never need to clean up the branch yourself.
+5. Do NOT merge the PR yourself. The harness runs an independent three-reviewer verification on the PR after you signal completion. On convergence it merges with `gh pr merge --squash --delete-branch`, so your branch is deleted the moment it merges. You never need to clean up the branch yourself.
 
 ================================================================
 SPEC
@@ -187,7 +187,7 @@ pr_url: <full https://github.com/... URL from `gh pr create` output, or 'none' i
 
    ```bash
    FEATURE="<feature-slug>"; STATUS="<status>"; PR_URL="<pr_url>"
-   NOTIFY="[ccx-harness] Completion landed for ${FEATURE}. Status: ${STATUS}. PR: ${PR_URL}. Read .ccx-harness/inbox/${FEATURE}.md and follow the ccx-harness:verify protocol now: dispatch two parallel Opus reviewers and auto-merge on convergence."
+   NOTIFY="[ccx-harness] Completion landed for ${FEATURE}. Status: ${STATUS}. PR: ${PR_URL}. Read .ccx-harness/inbox/${FEATURE}.md and follow the ccx-harness:verify protocol now: dispatch three parallel Opus reviewers; auto-merge if all three agree, otherwise adjudicate the dissent."
    printf '%s' "$NOTIFY" | pbcopy
    /usr/bin/osascript -e "display notification \"Completion landed for ${FEATURE}. If Claude did not respond, paste from clipboard.\" with title \"ccx-harness\" sound name \"Glass\""
    ```
@@ -243,7 +243,7 @@ Drive this by looking at the screen, not by trusting stale coordinates. The `con
 
 Codex pastes its completion summary into this thread and submits it, so it arrives as an ordinary user turn beginning with `[ccx-harness] Completion landed for <feature-slug>`. Treat that as the user prompting you with that content. Respond appropriately:
 
-- If status is **DONE** and the additionalContext includes the auto-verify trigger: follow the verify protocol (see `${CLAUDE_PLUGIN_ROOT}/skills/verify/SKILL.md`). Dispatch the two parallel reviewers, compare verdicts, and auto-merge on convergence. The user has already opted into auto-merge; do not ask for confirmation.
+- If status is **DONE** and the additionalContext includes the auto-verify trigger: follow the verify protocol (see `${CLAUDE_PLUGIN_ROOT}/skills/verify/SKILL.md`). Dispatch the three parallel reviewers; auto-merge if all three agree, otherwise spawn the adjudicator to fact-check the dissent. The user has already opted into auto-merge on a clean verification; do not ask for confirmation.
 - If status is **DONE** but no `pr_url` is present: paraphrase the blocker (Codex finished but didn't open a PR — likely a setup or `gh` auth issue), and ask the user to investigate.
 - If status is **BLOCKED**: paraphrase the blocker, recommend whether the user should fix manually or re-dispatch with a revised spec, and offer to revise the spec via `/ccx-harness:plan` if relevant.
 

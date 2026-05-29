@@ -1,6 +1,6 @@
 {
   "name": "ccx-harness",
-  "description": "Orchestrate OpenAI Codex.app from Claude Code. Plan features interactively, dispatch via computer-use, receive completion notifications back in the same Claude session, and gate merges behind an independent two-reviewer verification.",
+  "description": "Orchestrate OpenAI Codex.app from Claude Code. Plan features interactively, dispatch via computer-use, receive completion notifications back in the same Claude session, and gate merges behind an independent three-reviewer verification.",
   "owner": {
     "name": "Ryan Lavin",
     "email": "ryantlavin@gmail.com"

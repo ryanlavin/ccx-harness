@@ -1,8 +1,8 @@
 # Claude Code(x) Orchestration Harness
 
-`ccx-harness` (CC for Claude **Code**, x for Code**x**: the harness drives both). A Claude Code plugin that turns Claude into an orchestrator for OpenAI Codex.app, with an independent two-reviewer verification gate on every PR Codex opens.
+`ccx-harness` (CC for Claude **Code**, x for Code**x**: the harness drives both). A Claude Code plugin that turns Claude into an orchestrator for OpenAI Codex.app, with an independent three-reviewer verification gate on every PR Codex opens.
 
-You describe a feature in plain English. Claude interviews you conversationally, drafts a spec, then proposes a test plan targeting 85 to 90 percent coverage with high-confidence end-to-end scenarios. You sign off, and Claude dispatches the spec to Codex by driving the desktop UI: it looks at the screen, finds the Codex thread, pastes the spec, and submits. Codex branches from fresh main, implements, runs tests, opens a PR, and writes a completion file. Codex then drives the UI back the other way, finding your Claude orchestrator thread by name and pasting its completion summary in. Claude reads it, dispatches two parallel Opus reviewer agents that independently grade the PR against the spec, and auto-merges with `gh pr merge --squash --delete-branch` when both converge on MERGE.
+You describe a feature in plain English. Claude interviews you conversationally, drafts a spec, then proposes a test plan targeting 85 to 90 percent coverage with high-confidence end-to-end scenarios. You sign off, and Claude dispatches the spec to Codex by driving the desktop UI: it looks at the screen, finds the Codex thread, pastes the spec, and submits. Codex branches from fresh main, implements, runs tests, opens a PR, and writes a completion file. Codex then drives the UI back the other way, finding your Claude orchestrator thread by name and pasting its completion summary in. Claude reads it, dispatches three parallel Opus reviewer agents that independently grade the PR against the spec, and auto-merges with `gh pr merge --squash --delete-branch` when all three agree. If any one dissents, an adjudicator agent investigates that specific claim against the actual code and decides whether it's real before merging or sending it back for revision.
 
 Both directions are vision-based and symmetric: each agent finds the other's thread by name in the app sidebar, clicks in, pastes, and verifies by screenshot. macOS only.
 
@@ -16,9 +16,10 @@ you + Claude (plan)  ->  spec  ->  Claude drives Codex UI (dispatch)
                                           |
    Codex drives Claude UI (paste completion into named thread)
                                           |
-   Claude runs 2 Opus reviewers  ->  both MERGE?  ->  squash-merge + delete branch
+   Claude runs 3 Opus reviewers  ->  all 3 MERGE  ->  squash-merge + delete branch
                                           |
-                                   else: revise or escalate
+                       any dissent -> adjudicator fact-checks the claim
+                                          -> unfounded: merge / real: revise
 ```
 
 ## What you get
@@ -28,7 +29,7 @@ Four slash commands after install:
 - `/ccx-harness:setup` calibrates the Codex.app input and send-button coordinates (a hint for the dispatch), optionally wires up ElevenLabs for phone escalation, and proves the loop with a test message.
 - `/ccx-harness:plan <feature-slug>` is a conversational planner. It scans `CLAUDE.md`, project memory, and recent git activity, asks one or two questions at a time until the feature is understood, drafts the spec for your review, then proposes unit/integration/e2e tests with an 85 to 90 percent coverage target. It also captures your thread names (see Thread naming below). Writes `specs/<feature-slug>.md` only after you sign off.
 - `/ccx-harness:send <feature-slug>` dispatches the spec to Codex by driving the desktop UI. Tells Codex to branch from fresh `origin/main` as `codex/<feature-slug>`, implement, open a PR, write a completion file, and paste the completion back into your named Claude thread. Then exits.
-- `/ccx-harness:verify <feature-slug>` runs after Codex's completion lands. Fetches the PR diff, dispatches two parallel Opus reviewer agents that independently grade the PR, and auto-merges if both return MERGE. Surfaces concerns and offers a revision dispatch otherwise.
+- `/ccx-harness:verify <feature-slug>` runs after Codex's completion lands. Fetches the PR diff, dispatches three parallel Opus reviewer agents that independently grade the PR, and auto-merges if all three return MERGE. If any reviewer dissents, an adjudicator agent fact-checks that claim against the actual code: the PR merges only if the dissent proves unfounded, otherwise a revision is dispatched (or it escalates to you on a genuine judgment call).
 
 Plus a SessionStart hook that creates `.ccx-harness/inbox/` in your project and captures the Claude session id, and an optional MCP channel server (see Completion delivery below).
 
@@ -85,8 +86,8 @@ Claude drives the Codex UI: switches to your named Codex thread, pastes the spec
 Codex branches `codex/magic-link-auth` from fresh `origin/main`, implements, opens a PR, writes `.ccx-harness/inbox/magic-link-auth.md`, then drives the Claude UI to paste its completion summary into your named orchestrator thread. That arrives as a normal user turn. Claude then:
 
 1. Fetches the PR diff via `gh pr view` and `gh pr diff`.
-2. Dispatches two parallel Opus reviewer agents with identical inputs (spec, completion claim, PR metadata, diff) and a strict rubric.
-3. Compares verdicts. Both MERGE: auto-merge via `gh pr merge --squash --delete-branch`. Both REVISE/REJECT: synthesize concerns and offer a revision dispatch. Disagreement: surface both verdicts and ask you to decide.
+2. Dispatches three parallel Opus reviewer agents with identical inputs (spec, completion claim, PR metadata, diff) and a strict rubric.
+3. Compares verdicts. All three MERGE: auto-merge via `gh pr merge --squash --delete-branch`. Any dissent: an adjudicator agent investigates the dissenting claim against the actual code, then merges if it's unfounded, dispatches a revision if it's real, or escalates to you if it's a genuine judgment call.
 
 ## Autonomous orchestration (overnight queues)
 
@@ -144,7 +145,7 @@ Generated specs live in `specs/<feature-slug>.md` and are committable. Each has:
 
 **Reviewers disagreed.** Verify surfaces both verdicts and asks you to decide (merge anyway / dispatch revision / hold).
 
-**Both reviewers approved bad code.** Two-reviewer convergence is strong but not perfect. `gh pr revert <pr_number>` and dispatch a follow-up.
+**All three reviewers approved bad code.** Three reviewers plus an adjudicator is a strong filter but not perfect. `gh pr revert <pr_number>` and dispatch a follow-up.
 
 **ElevenLabs call did not fire.** Check `elevenlabs.enabled` and the agent/phone ids in config. The orchestrator constructs the call when it detects a genuine blocker.
 
