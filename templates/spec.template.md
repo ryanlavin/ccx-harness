@@ -14,6 +14,8 @@
 
 **Outputs:** {{OUTPUT_SHAPE}}
 
+**Estimated effort:** ~{{ESTIMATE_MINUTES}} minutes ({{SIZE_CLASS}}) — orchestrator deadman-timer input, not a deadline for Codex.
+
 ## Acceptance Criteria
 
 Codex: implementation is complete only when every numbered item below is observably true.

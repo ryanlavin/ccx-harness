@@ -1,133 +1,108 @@
 ---
 name: setup
-description: First-run calibration for ccx-harness. Captures the Codex.app input-field and send-button screen coordinates, optionally configures ElevenLabs for blocked-state phone escalation, sends a test message, and writes the result to ~/.claude/ccx-harness/config.json. Run this once after installing the plugin, and again whenever the Codex.app UI changes or you move to a new monitor.
+description: First-run setup for ccx-harness (relay mode). Checks prerequisites, writes ~/.claude/ccx-harness/config.json (v2 schema with relay cadences, estimate anchors, and optional ElevenLabs phone escalation), migrates v1 configs, and proves the relay round-trip with a self-test that needs no Codex. Run once after installing the plugin; re-run any time to change cadences or escalation.
 user-invocable: true
-allowed-tools: Bash Read Write Edit mcp__computer-use__request_access mcp__computer-use__open_application mcp__computer-use__cursor_position mcp__computer-use__screenshot mcp__computer-use__write_clipboard mcp__computer-use__computer_batch mcp__computer-use__list_granted_applications AskUserQuestion
+allowed-tools: Bash Read Write Edit AskUserQuestion
 ---
 
 # ccx-harness :: setup
 
-You are walking the user through one-time calibration so the rest of the harness can talk to OpenAI Codex.app. The goal of this skill is to produce a valid `~/.claude/ccx-harness/config.json` and prove it works by sending one test message.
+You are producing a valid v2 `~/.claude/ccx-harness/config.json` and proving the relay machinery works end to end — without needing Codex present. There is no screen calibration anymore: the harness has no computer-use anywhere. Claude and Codex talk only through `.ccx-harness/relay.md`, each polling on its own cadence.
 
 Do every step. Do not skip steps or guess values.
 
 ## Preconditions to check
 
-1. **computer-use MCP is available.** If `mcp__computer-use__*` tools are not in your toolset, stop and tell the user:
-   > The computer-use MCP isn't enabled in this Claude Code session. Install it from the MCP registry or your Claude Code settings, then re-run `/ccx-harness:setup`.
+Run these checks in parallel; report all failures at once:
 
-2. **Codex.app is installed.** Run `ls -d "/Applications/Codex.app" 2>/dev/null || ls -d "$HOME/Applications/Codex.app" 2>/dev/null`. If neither path exists, tell the user:
-   > I don't see Codex.app in /Applications. Install it from https://chatgpt.com/codex/download (or your usual source), launch it, sign in, then re-run `/ccx-harness:setup`.
+1. **`git` and `gh`, authenticated.** `gh auth status`. Codex opens PRs with `gh`; the verify skill fetches diffs and merges with it. If unauthenticated, tell the user to run `! gh auth login` and re-run setup.
+2. **`jq` on PATH.** Used by the SessionStart hook. If missing: `brew install jq`.
+3. **Hooks are active.** Check `${CLAUDE_PROJECT_DIR}/.ccx-harness/.session-id` exists. If missing, the plugin was likely installed during this very session: tell the user to restart Claude Code once, then re-run setup.
+4. **Codex has filesystem access to this project.** Nothing to verify programmatically — just confirm with the user that their Codex sessions for this project run with shell + filesystem access to the project directory (that is how it reads the relay file and the spec, and writes its handback). Codex.app and the Codex CLI both qualify.
 
-3. **`jq` is installed.** Run `which jq`. The plugin's hooks depend on it. If missing, tell the user:
-   > Install jq with `brew install jq`, then re-run `/ccx-harness:setup`.
+Note what is now NOT required, in case the user has v1 leftovers: no computer-use MCP, no `cliclick`, no `node`, no `--dangerously-load-development-channels` flag in their `claude` alias (the channel server is gone — they can delete that flag from their shell rc).
 
-4. **`node` is installed (v18+).** Run `which node && node --version`. The channel server is plain Node. If missing or older than v18, tell the user to install/upgrade.
+## Step 1: relay cadences
 
-4b. **`cliclick` is installed.** Run `which cliclick`. When Codex pastes its completion back into Claude, it uses cliclick to click the chat input and Send button at the coordinates it reads from a screenshot (vision-based, the same way Claude drives Codex). If missing, tell the user:
-   > Install cliclick with `brew install cliclick`, then re-run `/ccx-harness:setup`. Codex uses it to click into the Claude window when pasting completions back.
+Explain the three knobs in one short paragraph, then ask whether the defaults are fine (AskUserQuestion, single question, options "Use defaults (Recommended)" / "Customize"):
 
-5. **Hooks are active.** Check that `${CLAUDE_PROJECT_DIR}/.ccx-harness/.session-id` exists. If missing, the SessionStart hook didn't fire (most likely because the plugin was just installed in this very session). Tell the user:
-   > The ccx-harness hooks haven't activated yet. Quit and restart Claude Code, then re-run `/ccx-harness:setup`. One-time only; future sessions auto-init.
+- `recheck_minutes` (default **20**): how often an idle Codex re-checks the relay for its next prompt. Lower = faster pickup between tasks, slightly chattier Codex session.
+- `work_timeout_multiplier` (default **2.5**): Claude gets suspicious after `estimate × multiplier` of WORKING silence — it then checks liveness before bothering anyone.
+- `codex_give_up_hours` (default **9**): an idle Codex stops polling and signs off after this long with no new prompt (roughly a workday).
 
-6. **Channel server enabled.** This is the critical one. Ask the user:
-   > Have you added `--dangerously-load-development-channels plugin:ccx-harness@ccx-harness` to your `claude` shell function or invocation? Without it, the channel server runs but its completion notifications get dropped, so Codex finishing a feature won't auto-trigger anything in this session.
-   
-   If they're unsure, offer to inspect their `claude` shell function and walk them through the edit. The flag goes on the `command claude ...` line in their `.zshrc` / `.bashrc`. Example:
-   ```bash
-   command claude --dangerously-skip-permissions --dangerously-load-development-channels plugin:ccx-harness@ccx-harness "${args[@]}"
-   ```
-   
-   After they add it, they need to `source ~/.zshrc` and restart Claude Code.
+If they customize, collect the values in chat. Estimate anchors (`small/medium/large` minutes, defaults 20/45/90) and poll intervals rarely need changing; mention they exist and move on.
 
-7. **Config dir exists.** Run `mkdir -p ~/.claude/ccx-harness`.
+## Step 2: optional ElevenLabs phone escalation
 
-## Step 1: request access and bring Codex forward
+AskUserQuestion: "Want the harness to phone you when Codex hits a genuine blocker or goes dark mid-task? (Requires an ElevenLabs conversational agent + Twilio number — see docs/phone-escalation-setup.md.)" Options: "Yes, configure now" / "Skip for now".
 
-Call `mcp__computer-use__request_access` with `applications: ["com.openai.codex"]`. Tell the user:
-> I'm requesting access to Codex.app so I can read its window and click into it. Please approve the prompt.
+If skipped: `elevenlabs.enabled = false`.
 
-Once granted, call `mcp__computer-use__open_application` with `application: "Codex"` to bring it to the front.
+If configuring, collect in plain chat (free-form values, not AskUserQuestion):
 
-Take a screenshot with `mcp__computer-use__screenshot` and confirm in chat that you can see the Codex chat window with a visible input field at the bottom and a send button to its right. If you cannot see those, ask the user to resize Codex so both are visible, then re-screenshot.
+1. The **environment variable name** holding their API key (default `ELEVENLABS_API_KEY`). The key itself NEVER goes in the config file. If a v1 config exists with a plaintext `api_key`, point it out, tell them to move the key into the env var in their shell rc, and **recommend rotating it** since it sat in a file on disk.
+2. Agent ID.
+3. Phone number ID (the outbound number).
+4. Their phone number (E.164, e.g. `+15551234567`).
 
-## Step 2: capture the INPUT FIELD coordinates
+## Step 3: write config.json
 
-Say to the user:
-> I'll now record where Codex's chat input field is. **Hover your mouse cursor over the chat input area** (the text box where you type prompts). Don't click, just hover. Reply 'ready' when your cursor is in place.
-
-Wait for the user to reply 'ready' (or equivalent). Then call `mcp__computer-use__cursor_position` and capture the returned `{x, y}`. Show the captured coords back to the user:
-> Captured input field at (X, Y). Want to keep this or recapture?
-
-If they want to recapture, repeat. If they confirm, store as `codex_app.input_field`.
-
-## Step 3: capture the SEND BUTTON coordinates
-
-Same flow, but for the send button:
-> Now hover over the **send button** (usually a small arrow/paper-plane icon to the right of the input). Reply 'ready' when in place.
-
-Capture with `mcp__computer-use__cursor_position`. Confirm and store as `codex_app.send_button`.
-
-## Step 4: optional ElevenLabs escalation
-
-Ask the user via AskUserQuestion:
-- Question: "Do you want to wire up ElevenLabs so the harness calls your phone when Codex gets blocked (3 identical failures, or asks a clarifying question)?"
-- Options: "Yes, configure now", "Skip for now"
-
-If they skip, set `elevenlabs.enabled = false` and move on.
-
-If they want to configure, ask plainly in chat for these values, one at a time (do NOT use AskUserQuestion since these are free-form secrets/IDs):
-1. ElevenLabs API key environment variable name (default: `ELEVENLABS_API_KEY`). Tell them not to paste the key itself, just the env var name.
-2. Agent ID (the conversational agent that will make the call)
-3. Phone number ID (the outbound number)
-4. Their phone number (the destination, in E.164 format e.g. `+15551234567`)
-
-Set `elevenlabs.enabled = true` and fill the values. Endpoint defaults to `https://api.elevenlabs.io/v1/convai/conversations/{agent_id}/outbound-call` (you can hardcode this template).
-
-## Step 5: write config.json
-
-Write `~/.claude/ccx-harness/config.json` with this exact schema:
+`mkdir -p ~/.claude/ccx-harness`, then write `~/.claude/ccx-harness/config.json`:
 
 ```json
 {
-  "version": 1,
-  "codex_app": {
-    "bundle_id": "com.openai.codex",
-    "input_field": {"x": <captured>, "y": <captured>},
-    "send_button": {"x": <captured>, "y": <captured>}
-  },
-  "elevenlabs": {
-    "enabled": <true|false>,
-    "endpoint_template": "https://api.elevenlabs.io/v1/convai/conversations/{agent_id}/outbound-call",
-    "agent_id": <"..." or null>,
-    "phone_number_id": <"..." or null>,
-    "api_key_env": <"ELEVENLABS_API_KEY" or null>,
-    "caller_phone": <"+1..." or null>
-  },
+  "version": 2,
   "specs_dir": "specs",
-  "calibrated_at": "<ISO 8601 timestamp, run `date -u +%Y-%m-%dT%H:%M:%SZ`>"
+  "relay": {
+    "recheck_minutes": 20,
+    "claude_poll_seconds": 30,
+    "codex_poll_seconds": 60,
+    "pickup_grace_minutes": 5,
+    "bootstrap_pickup_minutes": 120,
+    "work_timeout_multiplier": 2.5,
+    "codex_give_up_hours": 9
+  },
+  "estimates_minutes": { "small": 20, "medium": 45, "large": 90 },
+  "elevenlabs": {
+    "enabled": false,
+    "endpoint_template": "https://api.elevenlabs.io/v1/convai/conversations/{agent_id}/outbound-call",
+    "agent_id": null,
+    "phone_number_id": null,
+    "api_key_env": "ELEVENLABS_API_KEY",
+    "to_number": null
+  },
+  "configured_at": "<ISO 8601 UTC now>"
 }
 ```
 
-## Step 6: prove it works
+If a v1 config exists, carry over its ElevenLabs values (mapped to the v2 keys, key itself excluded per Step 2) and drop `codex_app` entirely — coordinates are dead. `chmod 600` the file.
 
-1. Bring Codex.app forward again (`open_application "Codex"`).
-2. Write the calibration message to clipboard with `mcp__computer-use__write_clipboard`:
-   > `[ccx-harness calibration test] Please reply with the single word 'ok' and then stop. Do not start any work.`
-3. Use `mcp__computer-use__computer_batch` to:
-   - `left_click` at the captured input_field coords
-   - `key` `cmd+v`
-   - `wait` 1 second
-   - `left_click` at the captured send_button coords
-4. Wait 3 seconds, then `mcp__computer-use__screenshot`.
-5. Verify the screenshot shows either (a) a spinner / stop button (still working), or (b) Codex's 'ok' reply. If neither, the calibration is off. Show the screenshot to the user and offer to recapture coords.
+## Step 4: prove the relay round-trip (no Codex needed)
 
-## Step 7: confirm and exit
+Run the self-test in the current project. You play both sides; this exercises the exact scripts and file format the real flow uses.
+
+```bash
+mkdir -p .ccx-harness
+cp "${CLAUDE_PLUGIN_ROOT}/templates/poll-next.sh" .ccx-harness/poll-next.sh
+chmod +x .ccx-harness/poll-next.sh
+```
+
+1. **Claude's write, Codex's read.** Write a test prompt turn to `.ccx-harness/relay.md` (atomic: `.tmp` then `mv`) with `seq: 999`, `turn: codex`, `state: PROMPT_READY`, `task: setup-self-test`. Then run Codex's poller as Codex would:
+   `CCX_CHUNK_MIN=0 bash .ccx-harness/poll-next.sh 998; echo "exit=$?"`
+   Expect `exit=0` (it sees seq 999 > 998 on a codex turn). Anything else: the poller or the file format is broken — stop and debug before telling the user setup succeeded.
+2. **Codex's handback, Claude's watcher.** Rewrite the relay file as a handback: `seq: 999`, `turn: claude`, `state: DONE`. Then run the watcher in fast foreground mode:
+   `"${CLAUDE_PLUGIN_ROOT}/scripts/watch-relay.sh" "$(pwd)" 999 $(($(date +%s)+60)) 60 1; echo "exit=$?"`
+   Expect it to print `DONE 999` and `exit=0` within a second or two.
+3. **Clean up:** `rm -f .ccx-harness/relay.md .ccx-harness/.poll-state .ccx-harness/watch-relay.pid`.
+
+If both legs pass, the relay is proven: file format, atomic writes, both pollers, exit codes.
+
+## Step 5: confirm and exit
 
 Tell the user:
-> Setup complete. Config saved to `~/.claude/ccx-harness/config.json`. You can now use:
+
+> Setup complete — config at `~/.claude/ccx-harness/config.json`, relay self-test passed. The flow is now:
 >
-> - `/ccx-harness:plan <feature name>` to interview and write a spec
-> - `/ccx-harness:send <feature name>` to dispatch the spec to Codex
->
-> When Codex finishes, it pastes its completion back into this conversation via computer-use and submits it. If Codex's UI ever changes or you move it to a different monitor, re-run `/ccx-harness:setup`.
+> - `/ccx-harness:plan <feature>` — interview, spec, test plan.
+> - `/ccx-harness:send <feature>` — writes the prompt into `.ccx-harness/relay.md` and puts a one-line bootstrap on your clipboard. **Paste that one line into a Codex session for this project** — that's the only manual step all day.
+> - Codex acks in the relay file, implements, opens a PR, writes its handback to the same file, then polls every 20 minutes for its next prompt. I watch the file for free in the background, wake when it's my turn, run the three-reviewer verify, merge, and write the next queued prompt. We keep ping-ponging until the queue is empty or you say `/ccx-harness:send stop`.

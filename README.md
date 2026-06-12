@@ -1,49 +1,59 @@
 # Claude Code(x) Orchestration Harness
 
-`ccx-harness` (CC for Claude **Code**, x for Code**x**: the harness drives both). A Claude Code plugin that turns Claude into an orchestrator for OpenAI Codex.app, with an independent three-reviewer verification gate on every PR Codex opens.
+`ccx-harness` (CC for Claude **Code**, x for Code**x**: the harness drives both). A Claude Code plugin that turns Claude into an orchestrator for OpenAI Codex, with an independent three-reviewer verification gate on every PR Codex opens.
 
-You describe a feature in plain English. Claude interviews you conversationally, drafts a spec, then proposes a test plan targeting 85 to 90 percent coverage with high-confidence end-to-end scenarios. You sign off, and Claude dispatches the spec to Codex by driving the desktop UI: it looks at the screen, finds the Codex thread, pastes the spec, and submits. Codex branches from fresh main, implements, runs tests, opens a PR, and writes a completion file. Codex then drives the UI back the other way, finding your Claude orchestrator thread by name and pasting its completion summary in. Claude reads it, dispatches three parallel Opus reviewer agents that independently grade the PR against the spec, and auto-merges with `gh pr merge --squash --delete-branch` when all three agree. If any one dissents, an adjudicator agent investigates that specific claim against the actual code and decides whether it's real before merging or sending it back for revision.
+You describe a feature in plain English. Claude interviews you conversationally, drafts a spec, then proposes a test plan targeting 85 to 90 percent coverage with high-confidence end-to-end scenarios. You sign off, and Claude writes the dispatch prompt — spec, reward function, PR workflow, completion protocol — into one shared file: `.ccx-harness/relay.md`. You paste a single bootstrap line into a Codex session pointing it at that file, once. From there the two agents ping-pong the file all day with no UI driving and no further manual steps: Codex acks, implements from fresh main, opens a PR, and writes its handback into the relay; Claude — woken by a zero-token background watcher — runs three parallel Opus reviewers against the spec, auto-merges on convergence (`gh pr merge --squash --delete-branch`), and writes the next queued prompt into the same file. Codex, polling on its own cadence between tasks, picks it up and goes again.
 
-Both directions are vision-based and symmetric: each agent finds the other's thread by name in the app sidebar, clicks in, pastes, and verifies by screenshot. macOS only.
+No computer use. No screenshots, no coordinates, no window or thread bookkeeping. Two agents, one file, each polling at the rate it expects the other to take.
 
 ## The loop in one picture
 
 ```
-you + Claude (plan)  ->  spec  ->  Claude drives Codex UI (dispatch)
-                                          |
-                                   Codex implements, opens PR,
-                                   writes completion file
-                                          |
-   Codex drives Claude UI (paste completion into named thread)
-                                          |
-   Claude runs 3 Opus reviewers  ->  all 3 MERGE  ->  squash-merge + delete branch
-                                          |
-                       any dissent -> adjudicator fact-checks the claim
-                                          -> unfounded: merge / real: revise
+you + Claude (plan)  ->  specs/*.md  ->  Claude writes prompt into .ccx-harness/relay.md
+                                                       |
+        you paste ONE bootstrap line into Codex (first task of the day only)
+                                                       |
+              Codex: ack WORKING -> branch from fresh main -> implement
+                     -> open PR -> write DONE/BLOCKED handback into relay.md
+                     -> poll relay.md every ~20 min for the next prompt
+                                                       |
+   Claude (woken by its background watcher on the file): archive handback
+        -> 3 Opus reviewers  ->  all MERGE  ->  squash-merge + delete branch
+                    any dissent -> adjudicator fact-checks -> merge / revise
+        -> write next queued prompt (or revision, or answer) into relay.md
+                                                       |
+                              ... repeat until queue empty or /ccx-harness:send stop
 ```
+
+## How the waiting works (the whole trick)
+
+Each side polls the file on a cadence matched to how long the other usually takes — nobody pushes anything anywhere.
+
+- **Claude's wait costs zero tokens.** `/ccx-harness:send` launches `watch-relay.sh` as a background bash task that checks the relay every ~30 seconds and exits only when the turn comes back to Claude (DONE / BLOCKED / OFFLINE) or a deadline blows. The exit wakes Claude, which reads the file and acts. Claude never burns context polling an unchanged file.
+- **Claude estimates, then gets suspicious on schedule.** At dispatch, Claude estimates the task (anchored to configurable small/medium/large minutes). The estimate is a **deadman timer, not a deadline**: Codex's reward function gives it unlimited time, but after `estimate × 2.5` of silence Claude checks liveness (the spec's Operator Log mtime, recent commits on the branch) before deciding whether to extend quietly or escalate to you.
+- **Codex waits in chunks.** After a handback, Codex runs `.ccx-harness/poll-next.sh`, which blocks in ~20-minute chunks (exit 10 = "run me again") until a new prompt appears (exit 0), then reads the relay and continues. After ~9 idle hours it marks the relay OFFLINE and signs off (exit 20).
+- **Pickups are deadline-checked too.** If a prompt sits unacked past its pickup window (generous for the day's first bootstrap, tight mid-relay), Claude re-arms once with the bootstrap line back on your clipboard, then asks you.
 
 ## What you get
 
 Four slash commands after install:
 
-- `/ccx-harness:setup` calibrates the Codex.app input and send-button coordinates (a hint for the dispatch), optionally wires up ElevenLabs for phone escalation, and proves the loop with a test message.
-- `/ccx-harness:plan <feature-slug>` is a conversational planner. It scans `CLAUDE.md`, project memory, and recent git activity, asks one or two questions at a time until the feature is understood, drafts the spec for your review, then proposes unit/integration/e2e tests with an 85 to 90 percent coverage target. It also captures your thread names (see Thread naming below). Writes `specs/<feature-slug>.md` only after you sign off.
-- `/ccx-harness:send <feature-slug>` dispatches the spec to Codex by driving the desktop UI. Tells Codex to branch from fresh `origin/main` as `codex/<feature-slug>`, implement, open a PR, write a completion file, and paste the completion back into your named Claude thread. Then exits.
-- `/ccx-harness:verify <feature-slug>` runs after Codex's completion lands. Fetches the PR diff, dispatches three parallel Opus reviewer agents that independently grade the PR, and auto-merges if all three return MERGE. If any reviewer dissents, an adjudicator agent fact-checks that claim against the actual code: the PR merges only if the dissent proves unfounded, otherwise a revision is dispatched (or it escalates to you on a genuine judgment call).
+- `/ccx-harness:setup` — checks prerequisites (`gh`, `jq`), writes the v2 config (relay cadences, estimate anchors, optional ElevenLabs phone escalation), and proves the relay round-trip with a self-test that plays both sides — no Codex needed.
+- `/ccx-harness:plan <feature-slug>` — conversational planner. Scans `CLAUDE.md`, project memory, and recent git activity, asks one or two questions at a time, drafts the spec for your review, then proposes unit/integration/e2e tests with an 85–90% coverage target and an effort estimate. Writes `specs/<feature-slug>.md` only after you sign off.
+- `/ccx-harness:send <feature-slug>` — queues the spec and runs the relay. Writes the prompt turn into `.ccx-harness/relay.md` (archived to `.ccx-harness/outbox/`), puts the one-line bootstrap on your clipboard when Codex isn't already polling, starts the background watcher, and exits. Also: `status`, `resume` (re-arm after a session restart), `stop` (release Codex with an ALL_DONE turn).
+- `/ccx-harness:verify <feature-slug>` — three parallel Opus reviewer agents grade the PR against the spec; auto-merge on 3/3 MERGE; any dissent goes to an adjudicator agent that fact-checks it against the actual code before merging, revising (via a relay revision turn), or escalating to you. Triggered automatically by the relay wake handler on a DONE handback with a PR.
 
-Plus a SessionStart hook that creates `.ccx-harness/inbox/` in your project and captures the Claude session id, and an optional MCP channel server (see Completion delivery below).
+Plus a SessionStart hook that initializes `.ccx-harness/` and reports the live relay state (task, seq, watcher liveness, queue depth) to every new session in the project.
 
 ## Prerequisites
 
 1. **Claude Code** with plugins and hooks enabled. https://claude.com/claude-code
-2. **OpenAI Codex.app**, signed in, with shell access to your project. Codex needs `git` and `gh` available so it can branch, push, and open PRs, and `cliclick` + `screencapture` so it can drive the Claude UI to paste completions back.
-3. **computer-use MCP** enabled in Claude Code, so Claude can drive the Codex UI to dispatch. macOS only.
-4. **`cliclick`** (`brew install cliclick`): coordinate clicks for both directions of UI driving.
-5. **`gh` CLI** authenticated (`gh auth login`): Codex opens PRs, the verify skill fetches diffs and merges.
-6. **`jq`** on PATH (macOS Sonoma+ ships it, else `brew install jq`): used by the SessionStart hook.
-7. **Accessibility + Screen Recording permission** for the terminals/apps that drive the UI (macOS prompts on first use).
-8. **(Optional) `node` v18+** only if you want the MCP channel path (terminal-CLI users). Not needed for the desktop app.
-9. **(Optional) ElevenLabs + Twilio** if you want the harness to phone you when Codex hits a genuine blocker during a long unattended run. Setup is involved (two accounts), so it has its own guide: [docs/phone-escalation-setup.md](docs/phone-escalation-setup.md). Skip it and blockers just surface in the conversation / inbox instead.
+2. **OpenAI Codex** (desktop app or CLI), signed in, with shell + filesystem access to your project — that's how it reads the relay and writes back. It needs `git` and `gh` to branch, push, and open PRs.
+3. **`gh` CLI** authenticated (`gh auth login`): Codex opens PRs, the verify skill fetches diffs and merges.
+4. **`jq`** on PATH (macOS Sonoma+ ships it, else `brew install jq`): used by the SessionStart hook.
+5. **(Optional) ElevenLabs + Twilio** if you want the harness to phone you on a genuine blocker or a gone-dark task. Setup guide: [docs/phone-escalation-setup.md](docs/phone-escalation-setup.md). The API key lives in an env var, never in config.
+
+That's the whole list. No computer-use MCP, no accessibility permissions, no `cliclick`, no `node`, no channel flags.
 
 ## Install
 
@@ -53,101 +63,89 @@ In Claude Code:
 /plugin marketplace add <github-owner>/ccx-harness
 /plugin install ccx-harness@ccx-harness
 /reload-plugins
-```
-
-Replace `<github-owner>` with the account or org hosting this repo. Then run setup once:
-
-```
 /ccx-harness:setup
 ```
 
-Setup grants computer-use access to Codex.app, records the Codex input + send coordinates (a fallback hint; dispatch is primarily vision-based), optionally configures ElevenLabs, and sends a test message to confirm the loop. Config is saved to `~/.claude/ccx-harness/config.json`.
+Replace `<github-owner>` with the account or org hosting this repo. Setup writes `~/.claude/ccx-harness/config.json` and runs the relay self-test.
 
-## Thread naming (how completions route to the right place)
-
-The harness drives real app windows, so it needs to know which thread is which. There is no stable window id on macOS for these Electron apps, but each app's sidebar shows thread names you control, and that name is the durable handle.
-
-You give the orchestrator two names, either in your orchestrator prompt ("you are the orchestrator in the Claude thread named X; the Codex agent is in thread Y") or when `/ccx-harness:plan` asks you the first time (it stores them in `.ccx-harness/threads.json` so it only asks once). On dispatch, Claude switches Codex to thread Y before pasting. On completion, Codex finds Claude thread X in the sidebar, switches to it, and pastes there. Name your threads distinctively in each app's sidebar so they are findable.
-
-## Daily use (interactive)
+## Daily use
 
 ```
-/ccx-harness:plan magic-link-auth
+/ccx-harness:plan magic-link-auth        # interview -> spec -> test plan -> estimate
+/ccx-harness:plan rate-limit-webhooks    # plan as many as you like; they queue
+/ccx-harness:send magic-link-auth        # writes relay prompt, bootstrap on clipboard
 ```
 
-Claude scans the project, captures thread names if it does not have them, then runs a conversational planning session: understanding, then a spec draft for your review, then a test plan with the coverage target. It writes `specs/magic-link-auth.md` after you sign off.
+Paste the bootstrap line (already on your clipboard) into a Codex session for the project:
 
-```
-/ccx-harness:send magic-link-auth
-```
+> `[ccx-harness] You are the implementation half of a two-agent file relay. … Read /path/to/project/.ccx-harness/relay.md now and follow it exactly.`
 
-Claude drives the Codex UI: switches to your named Codex thread, pastes the spec (with the reward function, the fresh-main + PR workflow override, and the completion protocol appended), submits, verifies the spinner, and exits.
+That's your last required touch. Codex acks in the relay (Claude's watcher sees it and starts the deadman clock), implements, opens the PR, hands back. Claude wakes, verifies with three reviewers, merges, writes the next queued prompt; Codex's poll loop picks it up within ~20 minutes. BLOCKED handbacks surface the question to you (and optionally phone you); answers travel back through the relay the same way. At day's end, `/ccx-harness:send stop` releases Codex gracefully — or let it time out and sign off on its own.
 
-Codex branches `codex/magic-link-auth` from fresh `origin/main`, implements, opens a PR, writes `.ccx-harness/inbox/magic-link-auth.md`, then drives the Claude UI to paste its completion summary into your named orchestrator thread. That arrives as a normal user turn. Claude then:
+## The relay file
 
-1. Fetches the PR diff via `gh pr view` and `gh pr diff`.
-2. Dispatches three parallel Opus reviewer agents with identical inputs (spec, completion claim, PR metadata, diff) and a strict rubric.
-3. Compares verdicts. All three MERGE: auto-merge via `gh pr merge --squash --delete-branch`. Any dissent: an adjudicator agent investigates the dissenting claim against the actual code, then merges if it's unfounded, dispatches a revision if it's real, or escalates to you if it's a genuine judgment call.
+`.ccx-harness/relay.md` is a turn-based thread: YAML frontmatter for machine state, markdown body for the payload. Writes are atomic (`.tmp` + `mv`), `seq` increments only on Claude's prompt turns, and each side only acts when `turn` points at it.
 
-## Autonomous orchestration (overnight queues)
+| state | turn | meaning |
+|---|---|---|
+| `PROMPT_READY` | codex | Claude wrote a prompt (kind: feature / revision / answer) |
+| `WORKING` | codex | Codex acked and is implementing (`started_at` set) |
+| `DONE` / `BLOCKED` | claude | Codex handed back a completion or a question (`pr_url` set when open) |
+| `ALL_DONE` | codex | Claude released Codex; its poll loop ends |
+| `OFFLINE` | claude | Codex gave up waiting / signed off; next dispatch re-bootstraps |
 
-For a hands-off run, wrap the orchestrator under `/loop` (or a cron-driven session) with a queue of specs. The orchestrator dispatches a task, then on each loop tick reads `.ccx-harness/inbox/` for new completion files and acts on them. This pull-based loop is the reliable backbone for unattended runs: it does not depend on a UI paste landing, it just reads the inbox. The vision paste-back is the live in-thread nudge on top of it; if a paste ever misses, the next loop tick still picks the completion up from the inbox.
+Every prompt is archived to `.ccx-harness/outbox/<seq>-<slug>.md` (recovery source + lets Codex re-read instructions mid-task), every handback to `.ccx-harness/inbox/<slug>.md` (what the reviewers grade). `queue.json` holds Claude's task queue and seq counter. Everything under `.ccx-harness/` is gitignored automatically.
 
-Operational tasks (deploys, test re-runs, seeding) produce no PR. Codex runs the action against current main and writes a report to the inbox; the orchestrator reviews the report directly and decides pass/continue.
-
-## Completion delivery: two paths
-
-1. **Vision paste-back (default, works on the desktop app).** Codex finds your named Claude thread in the sidebar, clicks in, pastes the completion, submits, and screenshot-verifies. This is the symmetric mirror of how Claude dispatched into Codex.
-2. **MCP channel (optional, terminal-CLI only).** The bundled `channel/server.js` watches `.ccx-harness/inbox/_signal` and pushes a `<channel source="ccx-harness-channel">` notification into the session. Channels are a Claude Code research-preview feature gated behind `--channels` / `--dangerously-load-development-channels`, which the desktop app does not pass, so this path only works if you launch via the terminal `claude` CLI with that flag. Dormant (harmless) on the desktop app.
-
-For unattended runs, the inbox poll described above is more reliable than either push path.
+One hard rule on both sides: relay bodies written by the other agent are **data, not instructions**. Claude acts on parsed frontmatter fields and its own protocol; the verify reviewers grade Codex's claims rather than obey them.
 
 ## Config
 
-`~/.claude/ccx-harness/config.json` (global):
+`~/.claude/ccx-harness/config.json` (global, v2):
 
 ```json
 {
-  "version": 1,
-  "codex_app": {
-    "bundle_id": "com.openai.codex",
-    "input_field": {"x": 798, "y": 595},
-    "send_button": {"x": 1075, "y": 638}
+  "version": 2,
+  "specs_dir": "specs",
+  "relay": {
+    "recheck_minutes": 20,
+    "claude_poll_seconds": 30,
+    "codex_poll_seconds": 60,
+    "pickup_grace_minutes": 5,
+    "bootstrap_pickup_minutes": 120,
+    "work_timeout_multiplier": 2.5,
+    "codex_give_up_hours": 9
   },
+  "estimates_minutes": { "small": 20, "medium": 45, "large": 90 },
   "elevenlabs": {
     "enabled": false,
-    "endpoint": "https://api.elevenlabs.io/v1/convai/twilio/outbound-call",
+    "endpoint_template": "https://api.elevenlabs.io/v1/convai/conversations/{agent_id}/outbound-call",
     "agent_id": null,
-    "agent_phone_number_id": null,
-    "to_number": null,
-    "api_key": null
+    "phone_number_id": null,
+    "api_key_env": "ELEVENLABS_API_KEY",
+    "to_number": null
   }
 }
 ```
 
-`.ccx-harness/threads.json` (per project, gitignored): `{ "orchestrator_thread_name": "...", "codex_thread_name": "..." }`.
-
-The `codex_app` coordinates are a fallback hint; dispatch reads the screen first. Edit by hand or re-run `/ccx-harness:setup`.
-
 ## Spec layout
 
-Generated specs live in `specs/<feature-slug>.md` and are committable. Each has: Context, numbered Acceptance Criteria, a three-layer Test Plan (unit/integration/e2e) with pre-populated scenarios, a Coverage Target (85 to 90 percent, with a deliberate skip list), Architectural Constraints (auto-pulled from `CLAUDE.md` and memory), an Iteration Policy, and an Operator Log that Codex appends to.
+Generated specs live in `specs/<feature-slug>.md` and are committable. Each has: Context (including the effort estimate), numbered Acceptance Criteria, a three-layer Test Plan (unit/integration/e2e) with pre-populated scenarios, a Coverage Target (85 to 90 percent, with a deliberate skip list), Architectural Constraints (auto-pulled from `CLAUDE.md` and memory), an Iteration Policy, and an Operator Log that Codex appends to — which doubles as the liveness signal Claude checks when a task runs long.
 
 ## Troubleshooting
 
-**Dispatch landed in the wrong Codex thread.** Make sure the Codex thread name in `.ccx-harness/threads.json` matches the sidebar title exactly. Dispatch switches to that thread before pasting.
+**Codex never acked the prompt.** Mid-relay, its poll loop probably died (session ended, machine slept). The watcher times out the pickup, and Claude puts the bootstrap line back on your clipboard — paste it into a fresh Codex session; the relay resumes where it was.
 
-**Completion landed in the wrong Claude thread (or nowhere).** Same fix on the Claude side: the orchestrator thread name must match its sidebar title. With no name set (`unspecified`), Codex falls back to the frontmost window, which is unreliable with multiple windows. For unattended runs, rely on the inbox poll, it does not depend on the paste landing.
+**Relay shows OFFLINE.** Codex waited out the give-up window (default 9h) and signed off, possibly clobbering a just-written prompt (a deliberate, narrow race). Claude restores any clobbered prompt from `outbox/` and re-bootstraps on the next dispatch.
 
-**Codex could not click the input or send button.** Confirm `cliclick` is installed where Codex runs (`which cliclick`) and that Codex has Accessibility + Screen Recording permission.
+**Claude's session restarted mid-task.** Relay state lives on disk. The SessionStart hook reports it; run `/ccx-harness:send resume` to re-arm the watcher or handle a waiting handback.
 
-**`gh pr merge` failed during auto-merge.** Branch protection, failing checks, or conflicts. The verify skill surfaces the exact error and does not retry blindly. Re-run CI, get a review, or rebase.
+**The watcher says another watcher is running (exit 6).** Another Claude window owns this relay. One watcher per project; use `resume` only if that session is gone.
 
-**Reviewers disagreed.** Verify surfaces both verdicts and asks you to decide (merge anyway / dispatch revision / hold).
+**`gh pr merge` failed during auto-merge.** Branch protection, failing checks, or conflicts. The verify skill surfaces the exact error and does not retry blindly.
 
 **All three reviewers approved bad code.** Three reviewers plus an adjudicator is a strong filter but not perfect. `gh pr revert <pr_number>` and dispatch a follow-up.
 
-**ElevenLabs call did not fire.** Check `elevenlabs.enabled` and the agent/phone ids in config. The orchestrator constructs the call when it detects a genuine blocker.
+**ElevenLabs call did not fire.** Check `elevenlabs.enabled`, the agent/phone ids, and that the env var named in `api_key_env` is exported in the shell Claude runs from.
 
 ## Layout
 
@@ -156,18 +154,27 @@ ccx-harness/
 ├── .claude-plugin/
 │   ├── plugin.json
 │   └── marketplace.json
-├── .mcp.json                   # optional channel server (CLI-only path)
-├── channel/server.js           # optional: MCP channel, dormant on desktop app
-├── hooks/hooks.json            # SessionStart: create inbox, capture session id
-├── scripts/session-init.sh
+├── hooks/hooks.json            # SessionStart: init .ccx-harness, report relay state
+├── scripts/
+│   ├── session-init.sh
+│   └── watch-relay.sh          # Claude's zero-token wait: polls relay, exits to wake
 ├── skills/
-│   ├── setup/SKILL.md
-│   ├── plan/SKILL.md           # conversational planner + thread-name capture
-│   ├── send/SKILL.md           # vision dispatch + completion protocol
-│   └── verify/SKILL.md         # 2-reviewer dispatch + auto-merge
-├── templates/spec.template.md
+│   ├── setup/SKILL.md          # config v2 + relay self-test (plays both sides)
+│   ├── plan/SKILL.md           # conversational planner + estimate
+│   ├── send/SKILL.md           # the relay: queue, dispatch, watcher, wake handlers
+│   └── verify/SKILL.md         # 3 reviewers + adjudicator + auto-merge
+├── templates/
+│   ├── spec.template.md
+│   └── poll-next.sh            # Codex's wait loop, materialized into each project
 └── README.md
 ```
+
+## Migrating from 0.14 (computer-use era)
+
+- Re-run `/ccx-harness:setup` — it migrates your config to v2 and drops the dead `codex_app` coordinates.
+- Delete `--dangerously-load-development-channels plugin:ccx-harness@ccx-harness` from your `claude` alias; the channel server is gone (the watcher replaces it).
+- `cliclick`, computer-use MCP access, and accessibility permissions are no longer used. `.ccx-harness/threads.json` and `inbox/_signal` are dead files; remove them if you like.
+- If your old config had a plaintext ElevenLabs `api_key`, rotate it and export the new one as an env var — v2 stores only the env var's name.
 
 ## License
 

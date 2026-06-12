@@ -1,6 +1,6 @@
 {
   "name": "ccx-harness",
-  "description": "Orchestrate OpenAI Codex.app from Claude Code. Plan features interactively, dispatch via computer-use, receive completion notifications back in the same Claude session, and gate merges behind an independent three-reviewer verification.",
+  "description": "Orchestrate OpenAI Codex from Claude Code through a shared file relay — turn-based prompts and handbacks in .ccx-harness/relay.md, each agent polling on its own cadence, with merges gated behind an independent three-reviewer verification.",
   "owner": {
     "name": "Ryan Lavin",
     "email": "ryantlavin@gmail.com"
@@ -9,7 +9,7 @@
     {
       "name": "ccx-harness",
       "source": "./",
-      "description": "Plan features interactively in Claude, then orchestrate OpenAI Codex.app to implement them with tests baked in."
+      "description": "Plan features interactively in Claude, then relay them to OpenAI Codex to implement with tests baked in — no computer use, just two agents ping-ponging one file."
     }
   ]
 }

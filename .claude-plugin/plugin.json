@@ -1,12 +1,12 @@
 {
   "name": "ccx-harness",
-  "version": "0.14.0",
-  "description": "Claude Code(x) Orchestration Harness. Claude orchestrates OpenAI Codex.app via computer-use with an independent three-reviewer verification gate: conversational feature planning, spec generation with 85-90% coverage targets, vision-based dispatch, PR-based workflow, and auto-merge on reviewer convergence.",
+  "version": "0.15.0",
+  "description": "Claude Code(x) Orchestration Harness. Claude plans features with you, then orchestrates OpenAI Codex through a shared file relay: both agents read and write .ccx-harness/relay.md on their own polling cadences (no computer use anywhere), with conversational planning, 85-90% coverage targets, a PR-based workflow, and an independent three-reviewer verification gate with auto-merge on convergence.",
   "author": {
     "name": "Ryan Lavin",
     "email": "ryantlavin@gmail.com"
   },
   "homepage": "https://github.com/ryanlavin/ccx-harness",
   "license": "MIT",
-  "keywords": ["codex", "orchestration", "computer-use", "agent", "planning", "tdd"]
+  "keywords": ["codex", "orchestration", "relay", "polling", "agent", "planning", "tdd"]
 }

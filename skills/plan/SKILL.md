@@ -25,12 +25,7 @@ The flow has four phases. Stay in a phase until you're done, then move to the ne
    - Stack detection: `package.json`, `Cargo.toml`, `pyproject.toml`, `go.mod`, `Gemfile`. Identify the test framework (vitest, jest, pytest, playwright, cypress, etc.) so you can name commands accurately.
    - `ls specs/` — if other specs exist, skim one to learn the project's house style.
 
-4. **Thread names (one-time per project, for completion routing).** The harness pastes completions back into a specific Claude thread by name, and dispatches into a specific Codex thread by name, found via each app's sidebar. Resolve both names in this priority order:
-   - If your orchestrator prompt already told you the names ("you are the orchestrator in thread X; the Codex agent is in thread Y"), use those.
-   - Else read `.ccx-harness/threads.json` (keys `orchestrator_thread_name`, `codex_thread_name`). If present, use those.
-   - Else ASK the user, in plain chat (two quick questions):
-     > Before I write the spec, two quick setup questions so completions route correctly: (1) What's the name of THIS Claude thread as it appears in your sidebar? Codex will paste its results back into the thread with this name. (2) What's the name of the Codex thread I should dispatch into?
-   Write the answers to `.ccx-harness/threads.json` so this is asked once, not every feature. A name given in the prompt context always overrides the stored file. If the user doesn't know or doesn't have named threads yet, tell them to name the threads in each app's sidebar first; store `unspecified` and the harness will fall back to frontmost-window targeting (less reliable with multiple windows).
+There is no thread or window bookkeeping: dispatch and completion both travel through `.ccx-harness/relay.md`, so nothing in planning depends on which app windows exist.
 
 ## Phase A: understanding (conversational)
 
@@ -101,6 +96,7 @@ Filling rules:
 - Architectural Constraints: pulled from CLAUDE.md and memory, cited. Plus user-specified patterns.
 - Iteration Policy: standard (keep iterating while failure mode changes, stop at 3 identical fails, push to feature branch as you go).
 - Coverage Target: 85-90% with the user-agreed skipped areas listed.
+- `{{ESTIMATE_MINUTES}}` / `{{SIZE_CLASS}}`: your judgment of how long Codex will take, anchored to the `estimates_minutes` values in `~/.claude/ccx-harness/config.json` (defaults: small 20, medium 45, large 90). Weigh criteria count, test surface, and how gnarly the integration points looked in your scan. This is the deadman-timer input for the relay watcher, not a deadline for Codex — say so if the user asks.
 
 Save to `specs/<feature-slug>.md` (create the dir if missing).
 
@@ -118,8 +114,9 @@ Spec written to specs/<feature-slug>.md
   Edge cases tracked:     <N>
   Coverage target:        85–90% on new code
   Deliberate gaps:        <one-line summary of skipped areas>
+  Estimated effort:       ~<N> min (<size class>)
 
-Open it now to review? Or dispatch with /ccx-harness:send <feature-slug>?
+Open it now to review? Or queue it for the relay with /ccx-harness:send <feature-slug>?
 ```
 
 Stop. Do not auto-dispatch. The user invokes `/ccx-harness:send` separately.
